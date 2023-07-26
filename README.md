@@ -17,6 +17,18 @@ Copy of the original [harpoon](https://github.com/ThePrimeagen/harpoon) for nvim
 
 ## Why?
 
+- Keep list of most visited panes
+- Easily add/remove from this list
+- Use list to quickly go to pane
+- Panes are automatically removed when they are closed
+- When tabs or panes change name, these changes propagate to your harpoon list.
+
+### Coming next:
+
+In front of every pane in the list, there will be a character, this will allow you to navigate to any pane in two steps:
+- open plugin
+- type char corresponding to desired pane.
+
 Makes pane navigation easier. 
 
 ## Installation

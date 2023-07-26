@@ -90,16 +90,11 @@ fn get_focused_tab(tab_info: Vec<TabInfo>) -> Option<TabInfo> {
     return None;
 }
 
-fn is_user_pane(pane: &PaneInfo) -> bool {
-    // TODO: Which things should I check for
-    pane.is_focused & !pane.is_plugin
-}
-
 fn get_focused_pane(tab_position: usize, pane_manifest: PaneManifest) -> Option<PaneInfo> {
     let panes = pane_manifest.panes.get(&tab_position);
     if let Some(panes) = panes {
         for pane in panes {
-            if is_user_pane(pane) {
+            if pane.is_focused & !pane.is_plugin {
                 return Some(pane.clone());
             }
         }
@@ -112,7 +107,7 @@ struct State {
     panes: Vec<Pane>,
     focused_tab: Option<Tab>,
     focused_pane: Option<Pane>,
-    counter: usize,
+    plugin_id: PluginIds,
 }
 
 impl Default for State {
@@ -124,7 +119,7 @@ impl Default for State {
             panes,
             focused_tab: read_cached_tab(),
             focused_pane: None,
-            counter: 0,
+            plugin_id: get_plugin_ids(),
         }
     }
 }
@@ -160,7 +155,7 @@ impl State {
             if let Some(other_panes) = pane_manifest.panes.get(&pane.tab.position) {
                 if let Some(matching_pane) = other_panes
                     .iter()
-                    .find(|p| (p.id == pane.id) & is_user_pane(p))
+                    .find(|p| !p.is_plugin & (p.id == pane.id))
                 {
                     let new_pane = Pane {
                         title: matching_pane.title.clone(),
@@ -194,6 +189,10 @@ impl ZellijPlugin for State {
                     };
                     self.focused_tab = Some(tab.clone());
                     tab.write_cache();
+                    // if self.focused_tab.is_some() {
+                    //     // Close plugin when tab is changed (so it opens in the right place)
+                    //     close_plugin_pane(self.plugin_id.plugin_id as i32)
+                    // }
                 }
             }
 
@@ -203,13 +202,12 @@ impl ZellijPlugin for State {
             }
 
             Event::Key(Key::Char('a')) => {
-                // TODO: There is a bug when trying to add just after opening a new tab
+                // Note: On opening a new tab, you cannot directly add
+                // a pane, this is because TabUpdate needs to be triggered.
                 if let Some(pane) = &self.focused_pane {
                     if !self.panes.get_ids().contains(&pane.id) {
                         self.panes.push(pane.clone());
                         self.panes.write_cache();
-                        should_render = true;
-                        self.counter = self.counter + 1;
                     }
                 }
                 hide_self();
@@ -247,7 +245,7 @@ impl ZellijPlugin for State {
                 let pane = self.panes.get(self.selected);
 
                 if let Some(pane) = pane {
-                    hide_self();
+                    close_focus();
                     // TODO: This has a bug on macOS with hidden panes
                     focus_terminal_pane(pane.id as i32, true);
                 }
@@ -266,7 +264,7 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, _rows: usize, _cols: usize) {
-        println!("So far: {}", self.counter);
+        println!("Hello");
         println!(
             "{}",
             self.panes

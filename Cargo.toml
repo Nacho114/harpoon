@@ -2,7 +2,7 @@
 name = "harpoon"
 version = "0.1.0"
 edition = "2021"
-authors = ["Ignacio Aleman <TBD>"]
+authors = ["Ignacio Aleman <onsen@duck.com>"]
 
 [dependencies]
 ansi_term = "0.12.1"

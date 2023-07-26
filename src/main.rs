@@ -5,92 +5,83 @@ use std::{fs::File, io::Write, path::Path};
 use owo_colors::OwoColorize;
 use zellij_tile::prelude::*;
 
-// ---------------- IO -----------------------
+// TODO: This should probably come from a config file or something
+
+// NOTE: These are hard coded and common to cached
+const TAB_UPDATE_CACHE_PATH: &str = "/tmp/tab_update.json";
+const PANE_MANIFEST_CACHE_PATH: &str = "/tmp/pane_manifest.json";
+
+const HARPOON_CACHE_PATH: &str = "/tmp/harpoon.json";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Pane {
-    pub id: u32,
-    pub title: String,
-    pub tab: Tab,
+    pub pane_info: PaneInfo,
+    pub tab_info: TabInfo,
 }
 
 impl fmt::Display for Pane {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} | {} | id: {}", self.tab.name, self.title, self.id)
+        write!(f, "{} | {}", self.tab_info.name, self.pane_info.title)
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
-pub struct Tab {
-    pub name: String,
-    pub position: usize,
-}
-
-impl Tab {
-    fn write_cache(&self) {
-        let serialized = serde_json::to_string(self).unwrap();
-        let mut file = File::create(INFO_PATH).unwrap();
-        file.write_all(serialized.as_bytes()).unwrap();
-    }
-}
-
-//TODO: Change path
-const CACHE_PATH: &str = "/host/harpoon_panes.json";
-const INFO_PATH: &str = "/host/harpoon_info.json";
-
-//TODO: name
-pub trait Panes {
-    fn write_cache(&self) -> ();
-    fn get_ids(&self) -> Vec<u32>;
-}
-
-impl Panes for Vec<Pane> {
-    fn write_cache(&self) {
-        let serialized = serde_json::to_string(self).unwrap();
-        let mut file = File::create(CACHE_PATH).unwrap();
-        file.write_all(serialized.as_bytes()).unwrap();
-    }
-
-    fn get_ids(&self) -> Vec<u32> {
-        let ids: Vec<u32> = self.iter().map(|p| p.id).collect();
-        ids
-    }
-}
+// ----------------------------------- IO ------------------------------------------------
 
 fn read_cached_panes() -> Vec<Pane> {
-    if !Path::new(CACHE_PATH).exists() {
+    if !Path::new(HARPOON_CACHE_PATH).exists() {
         return Vec::default();
     }
 
-    let panes = std::fs::read_to_string(CACHE_PATH).unwrap();
+    let panes = std::fs::read_to_string(HARPOON_CACHE_PATH).unwrap();
     let panes: Vec<Pane> = serde_json::from_str(&panes).unwrap();
 
     return panes;
 }
 
-fn read_cached_tab() -> Option<Tab> {
-    if !Path::new(INFO_PATH).exists() {
+fn write_to_cache(panes: &Vec<Pane>) {
+    let serialized = serde_json::to_string(panes).unwrap();
+    let mut file = File::create(HARPOON_CACHE_PATH).unwrap();
+    file.write_all(serialized.as_bytes()).unwrap();
+}
+
+// ----------------------------------- IO ------------------------------------------------
+
+fn read_cached_tab_info() -> Option<Vec<TabInfo>> {
+    if !Path::new(TAB_UPDATE_CACHE_PATH).exists() {
         return None;
     }
 
-    let tab = std::fs::read_to_string(INFO_PATH).unwrap();
-    let tab: Tab = serde_json::from_str(&tab).unwrap();
+    let panes = std::fs::read_to_string(TAB_UPDATE_CACHE_PATH).unwrap();
+    let panes: Vec<TabInfo> = serde_json::from_str(&panes).unwrap();
 
-    return Some(tab);
+    return Some(panes);
 }
 
-// ---------------- Plugin -----------------------
+fn read_cached_pane_manifest() -> Option<PaneManifest> {
+    if !Path::new(PANE_MANIFEST_CACHE_PATH).exists() {
+        return None;
+    }
 
-fn get_focused_tab(tab_info: Vec<TabInfo>) -> Option<TabInfo> {
-    for tab in tab_info {
+    let pane_manifest = std::fs::read_to_string(PANE_MANIFEST_CACHE_PATH).unwrap();
+    let pane_manifest: PaneManifest = serde_json::from_str(&pane_manifest).unwrap();
+
+    return Some(pane_manifest);
+}
+
+// ----------------------------------- Find focused items -----------------------------------------
+
+// TODO: These could be pushed upstream to Zellij
+
+fn get_focused_tab(tab_infos: &Vec<TabInfo>) -> Option<TabInfo> {
+    for tab in tab_infos {
         if tab.active {
-            return Some(tab);
+            return Some(tab.clone());
         }
     }
     return None;
 }
 
-fn get_focused_pane(tab_position: usize, pane_manifest: PaneManifest) -> Option<PaneInfo> {
+fn get_focused_pane(tab_position: usize, pane_manifest: &PaneManifest) -> Option<PaneInfo> {
     let panes = pane_manifest.panes.get(&tab_position);
     if let Some(panes) = panes {
         for pane in panes {
@@ -102,24 +93,80 @@ fn get_focused_pane(tab_position: usize, pane_manifest: PaneManifest) -> Option<
     None
 }
 
+// ----------------------------------- Update ------------------------------------------------
+
+fn update_panes(
+    panes: Vec<Pane>,
+    pane_manifest: PaneManifest,
+    tab_infos: Vec<TabInfo>,
+) -> Vec<Pane> {
+    let mut new_panes: Vec<Pane> = Vec::default();
+    for pane in panes.clone() {
+        // Iterate over all panes, and find corresponding tab and pane based on id
+        // update it in case the info has changed, and if they are not there do not add them.
+        if let Some(tab_info) = tab_infos.get(pane.tab_info.position) {
+            if let Some(other_panes) = pane_manifest.panes.get(&pane.tab_info.position) {
+                if let Some(pane_info) = other_panes
+                    .iter()
+                    .find(|p| !p.is_plugin & (p.id == pane.pane_info.id))
+                {
+                    let pane_info = pane_info.clone();
+                    let tab_info = tab_info.clone();
+                    let new_pane = Pane {
+                        pane_info,
+                        tab_info,
+                    };
+                    new_panes.push(new_pane);
+                }
+            }
+        }
+    }
+    new_panes
+}
+
+fn init_state() -> Option<State> {
+    // Read cached info
+    let tab_infos = read_cached_tab_info()?;
+    let pane_manifest = read_cached_pane_manifest()?;
+
+    // Get focused pane
+    let tab_info = get_focused_tab(&tab_infos)?;
+    let pane_info = get_focused_pane(tab_info.position, &pane_manifest)?;
+    let focused_pane = Some(Pane {
+        pane_info,
+        tab_info,
+    });
+
+    // Get cached panes
+    let panes = read_cached_panes();
+    let panes = update_panes(panes, pane_manifest, tab_infos);
+
+    // Put selected on middle of the options
+    let selected = panes.len() / 2;
+
+    Some(State {
+        selected,
+        panes,
+        focused_pane,
+    })
+}
+
 struct State {
     selected: usize,
     panes: Vec<Pane>,
-    focused_tab: Option<Tab>,
     focused_pane: Option<Pane>,
-    plugin_id: PluginIds,
 }
 
 impl Default for State {
     fn default() -> Self {
-        let panes = read_cached_panes();
-        let selected = panes.len() / 2;
-        Self {
-            selected,
-            panes,
-            focused_tab: read_cached_tab(),
-            focused_pane: None,
-            plugin_id: get_plugin_ids(),
+        if let Some(state) = init_state() {
+            state
+        } else {
+            Self {
+                selected: 0,
+                panes: Vec::default(),
+                focused_pane: None,
+            }
         }
     }
 }
@@ -137,36 +184,12 @@ impl State {
         self.selected = self.selected - 1;
     }
 
-    fn set_focused_pane(&mut self, pane_manifest: PaneManifest) -> Option<Pane> {
-        let focused_tab = self.focused_tab.clone()?;
-        let focused_pane = get_focused_pane(focused_tab.position.clone(), pane_manifest)?;
-        let pane = Pane {
-            id: focused_pane.id,
-            title: focused_pane.title,
-            tab: focused_tab,
-        };
-        self.focused_pane = Some(pane.clone());
-        Some(pane)
-    }
-
-    fn update_panes(&mut self, pane_manifest: PaneManifest) {
-        let mut new_panes: Vec<Pane> = Vec::default();
-        for pane in self.panes.clone() {
-            if let Some(other_panes) = pane_manifest.panes.get(&pane.tab.position) {
-                if let Some(matching_pane) = other_panes
-                    .iter()
-                    .find(|p| !p.is_plugin & (p.id == pane.id))
-                {
-                    let new_pane = Pane {
-                        title: matching_pane.title.clone(),
-                        ..pane
-                    };
-                    new_panes.push(new_pane);
-                }
-            }
-        }
-        self.panes = new_panes;
-        self.panes.write_cache();
+    fn sort_panes(&mut self) {
+        self.panes.sort_by(|x, y| {
+            (x.tab_info.position)
+                .partial_cmp(&y.tab_info.position)
+                .unwrap()
+        });
     }
 }
 
@@ -174,49 +197,28 @@ register_plugin!(State);
 
 impl ZellijPlugin for State {
     fn load(&mut self) {
-        subscribe(&[EventType::TabUpdate, EventType::Key, EventType::PaneUpdate]);
+        subscribe(&[EventType::Key]);
     }
 
     fn update(&mut self, event: Event) -> bool {
         let mut should_render = false;
         match event {
-            Event::TabUpdate(tab_info) => {
-                let tab = get_focused_tab(tab_info);
-                if let Some(tab) = tab {
-                    let tab = Tab {
-                        name: tab.name,
-                        position: tab.position,
-                    };
-                    self.focused_tab = Some(tab.clone());
-                    tab.write_cache();
-                    // if self.focused_tab.is_some() {
-                    //     // Close plugin when tab is changed (so it opens in the right place)
-                    //     close_plugin_pane(self.plugin_id.plugin_id as i32)
-                    // }
-                }
-            }
-
-            Event::PaneUpdate(pane_manifest) => {
-                self.set_focused_pane(pane_manifest.clone());
-                // self.update_panes(pane_manifest);
-            }
-
             Event::Key(Key::Char('a')) => {
-                // Note: On opening a new tab, you cannot directly add
-                // a pane, this is because TabUpdate needs to be triggered.
+                let panes_ids: Vec<u32> = self.panes.iter().map(|p| p.pane_info.id).collect();
                 if let Some(pane) = &self.focused_pane {
-                    if !self.panes.get_ids().contains(&pane.id) {
+                    if !panes_ids.contains(&pane.pane_info.id) {
                         self.panes.push(pane.clone());
-                        self.panes.write_cache();
+                        self.sort_panes();
+                        write_to_cache(&self.panes);
                     }
                 }
-                hide_self();
+                close_focus();
             }
 
             Event::Key(Key::Char('d')) => {
                 if self.selected < self.panes.len() {
                     self.panes.remove(self.selected);
-                    self.panes.write_cache();
+                    write_to_cache(&self.panes);
                 }
 
                 if self.panes.len() > 0 {
@@ -226,7 +228,7 @@ impl ZellijPlugin for State {
             }
 
             Event::Key(Key::Esc | Key::Ctrl('c')) => {
-                hide_self();
+                close_focus();
             }
 
             Event::Key(Key::Down | Key::Char('j')) => {
@@ -247,7 +249,7 @@ impl ZellijPlugin for State {
                 if let Some(pane) = pane {
                     close_focus();
                     // TODO: This has a bug on macOS with hidden panes
-                    focus_terminal_pane(pane.id as i32, true);
+                    focus_terminal_pane(pane.pane_info.id as i32, true);
                 }
             }
             Event::Key(Key::Backspace) => {
@@ -264,7 +266,6 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, _rows: usize, _cols: usize) {
-        println!("Hello");
         println!(
             "{}",
             self.panes

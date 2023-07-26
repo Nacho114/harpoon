@@ -17,11 +17,13 @@ Copy of the original [harpoon](https://github.com/ThePrimeagen/harpoon) for nvim
 
 ## Why?
 
-- Keep list of most visited panes
+In a sentence: Quickly access your most used panes.
+
+- Manually manage list of favorite panes
 - Easily add/remove from this list
 - Use list to quickly go to pane
-- Panes are automatically removed when they are closed
-- When tabs or panes change name, these changes propagate to your harpoon list.
+- Panes are automatically removed from your list when they are closed
+- When tabs or panes change name, these changes propagate to your harpoon list
 
 ### Coming next:
 

@@ -1,17 +1,9 @@
 use core::fmt;
 use serde::{Deserialize, Serialize};
-use std::{fs::File, io::Write, path::Path};
+use std::collections::BTreeMap;
 
 use owo_colors::OwoColorize;
 use zellij_tile::prelude::*;
-
-// TODO: This should probably come from a config file or something
-
-// NOTE: These are hard coded and common to cached
-const TAB_UPDATE_CACHE_PATH: &str = "/tmp/tab_update.json";
-const PANE_MANIFEST_CACHE_PATH: &str = "/tmp/pane_manifest.json";
-
-const HARPOON_CACHE_PATH: &str = "/tmp/harpoon.json";
 
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Pane {
@@ -25,52 +17,7 @@ impl fmt::Display for Pane {
     }
 }
 
-// ----------------------------------- IO ------------------------------------------------
-
-fn read_cached_panes() -> Vec<Pane> {
-    if !Path::new(HARPOON_CACHE_PATH).exists() {
-        return Vec::default();
-    }
-
-    let panes = std::fs::read_to_string(HARPOON_CACHE_PATH).unwrap();
-    let panes: Vec<Pane> = serde_json::from_str(&panes).unwrap();
-
-    return panes;
-}
-
-fn write_to_cache(panes: &Vec<Pane>) {
-    let serialized = serde_json::to_string(panes).unwrap();
-    let mut file = File::create(HARPOON_CACHE_PATH).unwrap();
-    file.write_all(serialized.as_bytes()).unwrap();
-}
-
-// ----------------------------------- IO ------------------------------------------------
-
-fn read_cached_tab_info() -> Option<Vec<TabInfo>> {
-    if !Path::new(TAB_UPDATE_CACHE_PATH).exists() {
-        return None;
-    }
-
-    let panes = std::fs::read_to_string(TAB_UPDATE_CACHE_PATH).unwrap();
-    let panes: Vec<TabInfo> = serde_json::from_str(&panes).unwrap();
-
-    return Some(panes);
-}
-
-fn read_cached_pane_manifest() -> Option<PaneManifest> {
-    if !Path::new(PANE_MANIFEST_CACHE_PATH).exists() {
-        return None;
-    }
-
-    let pane_manifest = std::fs::read_to_string(PANE_MANIFEST_CACHE_PATH).unwrap();
-    let pane_manifest: PaneManifest = serde_json::from_str(&pane_manifest).unwrap();
-
-    return Some(pane_manifest);
-}
-
-// ----------------------------------- Find focused items -----------------------------------------
-
-// TODO: These could be pushed upstream to Zellij
+//<--------- TODO: Replace with official functions once available
 
 fn get_focused_tab(tab_infos: &Vec<TabInfo>) -> Option<TabInfo> {
     for tab in tab_infos {
@@ -93,12 +40,14 @@ fn get_focused_pane(tab_position: usize, pane_manifest: &PaneManifest) -> Option
     None
 }
 
+//--------->
+
 // ----------------------------------- Update ------------------------------------------------
 
-fn update_panes(
-    panes: Vec<Pane>,
-    pane_manifest: PaneManifest,
-    tab_infos: Vec<TabInfo>,
+fn get_valid_panes(
+    panes: &Vec<Pane>,
+    pane_manifest: &PaneManifest,
+    tab_infos: &Vec<TabInfo>,
 ) -> Vec<Pane> {
     let mut new_panes: Vec<Pane> = Vec::default();
     for pane in panes.clone() {
@@ -124,51 +73,13 @@ fn update_panes(
     new_panes
 }
 
-fn init_state() -> Option<State> {
-    // Read cached info
-    let tab_infos = read_cached_tab_info()?;
-    let pane_manifest = read_cached_pane_manifest()?;
-
-    // Get focused pane
-    let tab_info = get_focused_tab(&tab_infos)?;
-    let pane_info = get_focused_pane(tab_info.position, &pane_manifest)?;
-    let focused_pane = Some(Pane {
-        pane_info,
-        tab_info,
-    });
-
-    // Get cached panes
-    let panes = read_cached_panes();
-    let panes = update_panes(panes, pane_manifest, tab_infos);
-
-    // Put selected on middle of the options
-    let selected = panes.len() / 2;
-
-    Some(State {
-        selected,
-        panes,
-        focused_pane,
-    })
-}
-
+#[derive(Default)]
 struct State {
     selected: usize,
     panes: Vec<Pane>,
     focused_pane: Option<Pane>,
-}
-
-impl Default for State {
-    fn default() -> Self {
-        if let Some(state) = init_state() {
-            state
-        } else {
-            Self {
-                selected: 0,
-                panes: Vec::default(),
-                focused_pane: None,
-            }
-        }
-    }
+    tab_info: Option<Vec<TabInfo>>,
+    pane_manifest: Option<PaneManifest>,
 }
 
 impl State {
@@ -191,36 +102,69 @@ impl State {
                 .unwrap()
         });
     }
+
+    /// Update panes updates the pane states based on the latest pane_manifest and tab_info
+    fn update_panes(&mut self) -> Option<()> {
+        // Update panes to filter our invalid panes (e.g. tab/pane was closed).
+        let pane_manifest = self.pane_manifest.clone()?;
+        let tab_info = self.tab_info.clone()?;
+        let panes = get_valid_panes(&self.panes.clone(), &pane_manifest, &tab_info);
+        self.panes = panes;
+
+        // Update currently focused pane
+        let tab_info = get_focused_tab(&tab_info)?;
+        let pane_info = get_focused_pane(tab_info.position, &pane_manifest)?;
+        self.focused_pane = Some(Pane {
+            pane_info,
+            tab_info,
+        });
+
+        // Set default location of selected idx to the center
+        self.selected = self.panes.len() / 2;
+        Some(())
+    }
 }
 
 register_plugin!(State);
 
 impl ZellijPlugin for State {
-    fn load(&mut self) {
-        subscribe(&[EventType::Key]);
+    fn load(&mut self, _: BTreeMap<String, String>) {
+        request_permission(&[
+            PermissionType::RunCommands,
+            PermissionType::ReadApplicationState,
+            PermissionType::ChangeApplicationState,
+        ]);
+        subscribe(&[EventType::Key, EventType::TabUpdate, EventType::PaneUpdate]);
     }
 
     fn update(&mut self, event: Event) -> bool {
         let mut should_render = false;
         match event {
+            Event::TabUpdate(tab_info) => {
+                self.tab_info = Some(tab_info);
+                self.update_panes();
+                should_render = true;
+            }
+            Event::PaneUpdate(pane_manifest) => {
+                self.pane_manifest = Some(pane_manifest);
+                self.update_panes();
+                should_render = true;
+            }
             Event::Key(Key::Char('a')) => {
                 let panes_ids: Vec<u32> = self.panes.iter().map(|p| p.pane_info.id).collect();
                 if let Some(pane) = &self.focused_pane {
                     if !panes_ids.contains(&pane.pane_info.id) {
                         self.panes.push(pane.clone());
                         self.sort_panes();
-                        write_to_cache(&self.panes);
                     }
                 }
-                close_focus();
+                should_render = true;
+                hide_self();
             }
-
             Event::Key(Key::Char('d')) => {
                 if self.selected < self.panes.len() {
                     self.panes.remove(self.selected);
-                    write_to_cache(&self.panes);
                 }
-
                 if self.panes.len() > 0 {
                     self.select_up();
                 }
@@ -228,7 +172,7 @@ impl ZellijPlugin for State {
             }
 
             Event::Key(Key::Esc | Key::Ctrl('c')) => {
-                close_focus();
+                hide_self();
             }
 
             Event::Key(Key::Down | Key::Char('j')) => {
@@ -247,18 +191,20 @@ impl ZellijPlugin for State {
                 let pane = self.panes.get(self.selected);
 
                 if let Some(pane) = pane {
-                    close_focus();
+                    hide_self();
                     // TODO: This has a bug on macOS with hidden panes
-                    focus_terminal_pane(pane.pane_info.id as i32, true);
+                    focus_terminal_pane(pane.pane_info.id, true);
                 }
             }
-            Event::Key(Key::Backspace) => {
-                should_render = true;
-            }
+            ////TODO: Should I remove this?
+            //Event::Key(Key::Backspace) => {
+            //    should_render = true;
+            //}
 
-            Event::Key(Key::Char(c)) if c.is_ascii_alphabetic() || c.is_ascii_digit() => {
-                should_render = true;
-            }
+            ////TODO: Should I remove this?
+            //Event::Key(Key::Char(c)) if c.is_ascii_alphabetic() || c.is_ascii_digit() => {
+            //    should_render = true;
+            //}
             _ => (),
         };
 

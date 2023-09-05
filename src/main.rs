@@ -196,15 +196,6 @@ impl ZellijPlugin for State {
                     focus_terminal_pane(pane.pane_info.id, true);
                 }
             }
-            ////TODO: Should I remove this?
-            //Event::Key(Key::Backspace) => {
-            //    should_render = true;
-            //}
-
-            ////TODO: Should I remove this?
-            //Event::Key(Key::Char(c)) if c.is_ascii_alphabetic() || c.is_ascii_digit() => {
-            //    should_render = true;
-            //}
             _ => (),
         };
 

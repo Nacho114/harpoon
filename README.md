@@ -27,6 +27,8 @@ In a sentence: Quickly access your most used panes.
 
 ## Installation
 
+**Requires Zellij `0.38.0` or newer.**
+
 *Note*: you will need to have `wasm32-wasi` added to rust as a target to build the plugin. This can be done with `rustup target add wasm32-wasi`.
 
 ```bash

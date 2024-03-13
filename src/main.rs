@@ -119,8 +119,17 @@ impl State {
             tab_info,
         });
 
-        // Set default location of selected idx to the center
-        self.selected = self.panes.len() / 2;
+        // Set default location of selected idx to currently focused pane
+        if let Some(focused_pane) = &self.focused_pane {
+            for (idx,pane) in self.panes.iter().enumerate() {
+                if pane.pane_info.id == focused_pane.pane_info.id {
+                    self.selected = idx;
+                }
+            }
+        }else{
+            self.selected = 0;
+        }
+
         Some(())
     }
 }

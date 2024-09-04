@@ -159,6 +159,28 @@ impl ZellijPlugin for State {
                 self.update_panes();
                 should_render = true;
             }
+            Event::Key(Key::Char('A')) => {
+                let current_pane_ids: Vec<u32> = self.panes.iter().map(|p| p.pane_info.id).collect();
+                if let Some(pane_manifest) = &self.pane_manifest {
+                    if let Some(tab_info) = &self.tab_info {
+                        for (tab_position, panes) in &pane_manifest.panes {
+                            if let Some(tab) = tab_info.iter().find(|t| t.position == *tab_position) {
+                                for pane in panes {
+                                    if !pane.is_plugin && !current_pane_ids.contains(&pane.id) {
+                                        self.panes.push(Pane {
+                                            pane_info: pane.clone(),
+                                            tab_info: tab.clone(),
+                                        });
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                self.sort_panes();
+                should_render = true;
+                hide_self();
+            },
             Event::Key(Key::Char('a')) => {
                 let panes_ids: Vec<u32> = self.panes.iter().map(|p| p.pane_info.id).collect();
                 if let Some(pane) = &self.focused_pane {

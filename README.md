@@ -10,6 +10,7 @@ Copy of the original [harpoon](https://github.com/ThePrimeagen/harpoon) for nvim
 ## Usage
 
 - `a` to add pane to list
+- `A` to add all current panes to list
 - `Up` and `Down` or `j` and `k` to cycle through pane list
 - `d` to remove pane from list
 - `Enter` or `l` to switch to the selected pane

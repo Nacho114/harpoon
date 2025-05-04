@@ -30,14 +30,14 @@ In a sentence: Quickly access your most used panes.
 
 **Requires Zellij `0.38.0` or newer.**
 
-*Note*: you will need to have `wasm32-wasi` added to rust as a target to build the plugin. This can be done with `rustup target add wasm32-wasi`.
+_Note_: you will need to have `wasm32-wasip1` added to rust as a target to build the plugin. This can be done with `rustup target add wasm32-wasip1`.
 
 ```bash
 git clone git@github.com:Nacho114/harpoon.git
 cd harpoon
 cargo build --release
 mkdir -p ~/.config/zellij/plugins/
-mv target/wasm32-wasi/release/harpoon.wasm ~/.config/zellij/plugins/
+mv target/wasm32-wasip1/release/harpoon.wasm ~/.config/zellij/plugins/
 ```
 
 ## Keybinding

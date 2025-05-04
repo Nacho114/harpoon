@@ -159,74 +159,78 @@ impl ZellijPlugin for State {
                 self.update_panes();
                 should_render = true;
             }
-            Event::Key(Key::Char('A')) => {
-                let current_pane_ids: Vec<u32> = self.panes.iter().map(|p| p.pane_info.id).collect();
-                if let Some(pane_manifest) = &self.pane_manifest {
-                    if let Some(tab_info) = &self.tab_info {
-                        for (tab_position, panes) in &pane_manifest.panes {
-                            if let Some(tab) = tab_info.iter().find(|t| t.position == *tab_position) {
-                                for pane in panes {
-                                    if !pane.is_plugin && !current_pane_ids.contains(&pane.id) {
-                                        self.panes.push(Pane {
-                                            pane_info: pane.clone(),
-                                            tab_info: tab.clone(),
-                                        });
+            Event::Key(key) => match key.bare_key {
+                BareKey::Char('A') => {
+                    let current_pane_ids: Vec<u32> =
+                        self.panes.iter().map(|p| p.pane_info.id).collect();
+                    if let Some(pane_manifest) = &self.pane_manifest {
+                        if let Some(tab_info) = &self.tab_info {
+                            for (tab_position, panes) in &pane_manifest.panes {
+                                if let Some(tab) =
+                                    tab_info.iter().find(|t| t.position == *tab_position)
+                                {
+                                    for pane in panes {
+                                        if !pane.is_plugin && !current_pane_ids.contains(&pane.id) {
+                                            self.panes.push(Pane {
+                                                pane_info: pane.clone(),
+                                                tab_info: tab.clone(),
+                                            });
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                    self.sort_panes();
+                    should_render = true;
+                    hide_self();
                 }
-                self.sort_panes();
-                should_render = true;
-                hide_self();
-            },
-            Event::Key(Key::Char('a')) => {
-                let panes_ids: Vec<u32> = self.panes.iter().map(|p| p.pane_info.id).collect();
-                if let Some(pane) = &self.focused_pane {
-                    if !panes_ids.contains(&pane.pane_info.id) {
-                        self.panes.push(pane.clone());
-                        self.sort_panes();
+                BareKey::Char('a') => {
+                    let panes_ids: Vec<u32> = self.panes.iter().map(|p| p.pane_info.id).collect();
+                    if let Some(pane) = &self.focused_pane {
+                        if !panes_ids.contains(&pane.pane_info.id) {
+                            self.panes.push(pane.clone());
+                            self.sort_panes();
+                        }
+                    }
+                    should_render = true;
+                    hide_self();
+                }
+                BareKey::Char('d') => {
+                    if self.selected < self.panes.len() {
+                        self.panes.remove(self.selected);
+                    }
+                    if self.panes.len() > 0 {
+                        self.select_up();
+                    }
+                    should_render = true;
+                }
+                BareKey::Char('c') | BareKey::Esc => {
+                    hide_self();
+                }
+                BareKey::Down | BareKey::Char('j') => {
+                    if self.panes.len() > 0 {
+                        self.select_down();
+                        should_render = true;
                     }
                 }
-                should_render = true;
-                hide_self();
-            }
-            Event::Key(Key::Char('d')) => {
-                if self.selected < self.panes.len() {
-                    self.panes.remove(self.selected);
+                BareKey::Up | BareKey::Char('k') => {
+                    if self.panes.len() > 0 {
+                        self.select_up();
+                        should_render = true;
+                    }
                 }
-                if self.panes.len() > 0 {
-                    self.select_up();
-                }
-                should_render = true;
-            }
+                BareKey::Enter | BareKey::Char('l') => {
+                    let pane = self.panes.get(self.selected);
 
-            Event::Key(Key::Esc | Key::Ctrl('c')) => {
-                hide_self();
-            }
-
-            Event::Key(Key::Down | Key::Char('j')) => {
-                if self.panes.len() > 0 {
-                    self.select_down();
-                    should_render = true;
+                    if let Some(pane) = pane {
+                        hide_self();
+                        // TODO: This has a bug on macOS with hidden panes
+                        focus_terminal_pane(pane.pane_info.id, true);
+                    }
                 }
-            }
-            Event::Key(Key::Up | Key::Char('k')) => {
-                if self.panes.len() > 0 {
-                    self.select_up();
-                    should_render = true;
-                }
-            }
-            Event::Key(Key::Char('\n') | Key::Char('l')) => {
-                let pane = self.panes.get(self.selected);
-
-                if let Some(pane) = pane {
-                    hide_self();
-                    // TODO: This has a bug on macOS with hidden panes
-                    focus_terminal_pane(pane.pane_info.id, true);
-                }
-            }
+                _ => (),
+            },
             _ => (),
         };
 

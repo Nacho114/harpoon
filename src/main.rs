@@ -2,7 +2,6 @@ use core::fmt;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-use owo_colors::OwoColorize;
 use zellij_tile::prelude::*;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -237,21 +236,86 @@ impl ZellijPlugin for State {
         should_render
     }
 
-    fn render(&mut self, _rows: usize, _cols: usize) {
-        println!(
-            "{}",
-            self.panes
-                .iter()
-                .enumerate()
-                .map(|(idx, pane)| {
-                    if idx == self.selected {
-                        pane.to_string().red().bold().to_string()
-                    } else {
-                        pane.to_string()
-                    }
-                })
-                .collect::<Vec<String>>()
-                .join("\n")
-        );
+    fn render(&mut self, rows: usize, cols: usize) {
+        for (idx, pane) in self.panes.iter().enumerate() {
+            let text = if idx == self.selected {
+                Text::new(pane.to_string()).selected()
+            } else {
+                Text::new(pane.to_string())
+            };
+            print_text_with_coordinates(text, 0, idx, None, None);
+        }
+
+        let hint_y = rows.saturating_sub(1);
+        let hint_line = build_hint_line(cols);
+        print_text_with_coordinates(hint_line, 0, hint_y, None, None);
     }
+}
+
+fn build_hint_line(cols: usize) -> Text {
+    let (line, key_ranges) = if cols > 75 {
+        build_wide_hints()
+    } else if cols > 50 {
+        build_medium_hints()
+    } else {
+        build_narrow_hints()
+    };
+
+    let mut text = Text::new(&line);
+    for range in key_ranges {
+        text = text.color_range(3, range);
+    }
+    text
+}
+
+fn build_wide_hints() -> (String, Vec<std::ops::Range<usize>>) {
+    let parts = [
+        ("<a>", " add pane"),
+        ("<A>", " add all"),
+        ("<d>", " delete"),
+        ("<j/k>", " navigate"),
+        ("<Enter>", " focus"),
+        ("<Esc>", " close"),
+    ];
+    build_hint_string(&parts, ", ")
+}
+
+fn build_medium_hints() -> (String, Vec<std::ops::Range<usize>>) {
+    let parts = [
+        ("<a>", " add"),
+        ("<A>", " all"),
+        ("<d>", " del"),
+        ("<j/k>", " nav"),
+        ("<Enter>", " go"),
+        ("<Esc>", " quit"),
+    ];
+    build_hint_string(&parts, ", ")
+}
+
+fn build_narrow_hints() -> (String, Vec<std::ops::Range<usize>>) {
+    let parts = [
+        ("<a>", " add"),
+        ("<d>", " del"),
+        ("<Enter>", " go"),
+        ("<Esc>", ""),
+    ];
+    build_hint_string(&parts, " ")
+}
+
+fn build_hint_string(parts: &[(&str, &str)], separator: &str) -> (String, Vec<std::ops::Range<usize>>) {
+    let mut result = String::new();
+    let mut key_ranges = Vec::new();
+
+    for (i, (key, desc)) in parts.iter().enumerate() {
+        if i > 0 {
+            result.push_str(separator);
+        }
+        let start = result.len();
+        result.push_str(key);
+        let end = result.len();
+        key_ranges.push(start..end);
+        result.push_str(desc);
+    }
+
+    (result, key_ranges)
 }

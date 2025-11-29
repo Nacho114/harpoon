@@ -5,9 +5,6 @@ edition = "2021"
 authors = ["Ignacio Aleman <onsen@duck.com>"]
 
 [dependencies]
-ansi_term = "0.12.1"
-chrono = "0.4.26"
-owo-colors = "3.5.0"
 serde = "1.0.175"
 serde_json = "1.0.103"
 zellij-tile = "0.42.2"

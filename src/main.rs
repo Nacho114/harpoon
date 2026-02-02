@@ -28,12 +28,18 @@ fn get_focused_tab(tab_infos: &Vec<TabInfo>) -> Option<TabInfo> {
 }
 
 fn get_focused_pane(tab_position: usize, pane_manifest: &PaneManifest) -> Option<PaneInfo> {
-    let panes = pane_manifest.panes.get(&tab_position);
-    if let Some(panes) = panes {
-        for pane in panes {
-            if pane.is_focused & !pane.is_plugin {
-                return Some(pane.clone());
-            }
+    let panes = pane_manifest.panes.get(&tab_position)?;
+    // First, try to find a focused non-plugin pane
+    for pane in panes {
+        if pane.is_focused && !pane.is_plugin {
+            return Some(pane.clone());
+        }
+    }
+    // Fallback: if no focused non-plugin pane (e.g., plugin has focus),
+    // return the first non-plugin pane
+    for pane in panes {
+        if !pane.is_plugin {
+            return Some(pane.clone());
         }
     }
     None
@@ -52,7 +58,7 @@ fn get_valid_panes(
     for pane in panes.clone() {
         // Iterate over all panes, and find corresponding tab and pane based on id
         // update it in case the info has changed, and if they are not there do not add them.
-        if let Some(tab_info) = tab_infos.get(pane.tab_info.position) {
+        if let Some(tab_info) = tab_infos.iter().find(|t| t.position == pane.tab_info.position) {
             if let Some(other_panes) = pane_manifest.panes.get(&pane.tab_info.position) {
                 if let Some(pane_info) = other_panes
                     .iter()
@@ -143,6 +149,9 @@ impl ZellijPlugin for State {
             PermissionType::ChangeApplicationState,
         ]);
         subscribe(&[EventType::Key, EventType::TabUpdate, EventType::PaneUpdate]);
+
+        let plugin_ids = get_plugin_ids();
+        rename_plugin_pane(plugin_ids.plugin_id, "harpoon");
     }
 
     fn update(&mut self, event: Event) -> bool {

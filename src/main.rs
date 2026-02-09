@@ -64,7 +64,10 @@ fn get_valid_panes(
     for pane in panes.clone() {
         // Iterate over all panes, and find corresponding tab and pane based on id
         // update it in case the info has changed, and if they are not there do not add them.
-        if let Some(tab_info) = tab_infos.iter().find(|t| t.position == pane.tab_info.position) {
+        if let Some(tab_info) = tab_infos
+            .iter()
+            .find(|t| t.position == pane.tab_info.position)
+        {
             if let Some(other_panes) = pane_manifest.panes.get(&pane.tab_info.position) {
                 if let Some(pane_info) = other_panes
                     .iter()
@@ -137,12 +140,12 @@ impl State {
 
         // Set default location of selected idx to currently focused pane
         if let Some(focused_pane) = &self.focused_pane {
-            for (idx,pane) in self.panes.iter().enumerate() {
+            for (idx, pane) in self.panes.iter().enumerate() {
                 if pane.pane_info.id == focused_pane.pane_info.id {
                     self.selected = idx;
                 }
             }
-        }else{
+        } else {
             self.selected = 0;
         }
 
@@ -171,7 +174,9 @@ impl State {
                         if pane.title != bookmark.pane_title {
                             continue;
                         }
-                        if current_pane_ids.contains(&pane.id) || matched_pane_ids.contains(&pane.id) {
+                        if current_pane_ids.contains(&pane.id)
+                            || matched_pane_ids.contains(&pane.id)
+                        {
                             continue;
                         }
                         self.panes.push(Pane {
@@ -212,7 +217,7 @@ impl State {
         let Some(file_path) = self.session_file_path() else {
             return;
         };
-        let cmd = format!("cat {} 2>/dev/null || echo '[]'", file_path);
+        let cmd = format!("cat {file_path} 2>/dev/null || echo '[]'");
         let mut context = BTreeMap::new();
         context.insert("source".to_string(), "load".to_string());
         run_command(&["sh", "-c", &cmd], context);
@@ -444,7 +449,10 @@ fn build_narrow_hints() -> (String, Vec<std::ops::Range<usize>>) {
     build_hint_string(&parts, " ")
 }
 
-fn build_hint_string(parts: &[(&str, &str)], separator: &str) -> (String, Vec<std::ops::Range<usize>>) {
+fn build_hint_string(
+    parts: &[(&str, &str)],
+    separator: &str,
+) -> (String, Vec<std::ops::Range<usize>>) {
     let mut result = String::new();
     let mut key_ranges = Vec::new();
 

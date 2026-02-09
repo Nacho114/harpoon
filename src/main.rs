@@ -195,7 +195,9 @@ impl State {
                         if pane.title != bookmark.pane_title {
                             continue;
                         }
-                        if current_pane_ids.contains(&pane.id) || matched_pane_ids.contains(&pane.id) {
+                        if current_pane_ids.contains(&pane.id)
+                            || matched_pane_ids.contains(&pane.id)
+                        {
                             continue;
                         }
                         self.panes.push(Pane {
@@ -236,7 +238,7 @@ impl State {
         let Some(file_path) = self.session_file_path() else {
             return;
         };
-        let cmd = format!("cat {} 2>/dev/null || echo '[]'", file_path);
+        let cmd = format!("cat {file_path} 2>/dev/null || echo '[]'");
         let mut context = BTreeMap::new();
         context.insert("source".to_string(), "load".to_string());
         run_command(&["sh", "-c", &cmd], context);
@@ -478,7 +480,10 @@ fn build_narrow_hints() -> (String, Vec<std::ops::Range<usize>>) {
     build_hint_string(&parts, " ")
 }
 
-fn build_hint_string(parts: &[(&str, &str)], separator: &str) -> (String, Vec<std::ops::Range<usize>>) {
+fn build_hint_string(
+    parts: &[(&str, &str)],
+    separator: &str,
+) -> (String, Vec<std::ops::Range<usize>>) {
     let mut result = String::new();
     let mut key_ranges = Vec::new();
 

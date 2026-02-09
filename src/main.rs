@@ -224,7 +224,7 @@ impl State {
     }
 
     fn data_dir_path(&self) -> String {
-        "${XDG_DATA_HOME:-$HOME/.local/share}/harpoon".to_string()
+        "${XDG_DATA_HOME:-$HOME/.local/share}/zellij-harpoon".to_string()
     }
 
     fn session_file_path(&self) -> Option<String> {

@@ -173,6 +173,11 @@ impl State {
         }
         self.clamp_selected();
 
+        if self.persistence.has_changed(&self.panes) {
+            self.persistence
+                .save_to_disk(&self.session_name, &self.panes);
+        }
+
         Some(())
     }
 }

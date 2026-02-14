@@ -14,6 +14,7 @@ struct PaneBookmark {
 #[derive(Default)]
 pub struct Persistence {
     pending_bookmarks: Vec<PaneBookmark>,
+    last_saved_state: Vec<(String, String)>,
 }
 
 #[derive(Debug)]
@@ -59,6 +60,14 @@ impl Persistence {
         new_panes
     }
 
+    pub fn has_changed(&self, panes: &[Pane]) -> bool {
+        let current: Vec<(String, String)> = panes
+            .iter()
+            .map(|p| (p.tab_info.name.clone(), p.pane_info.title.clone()))
+            .collect();
+        current != self.last_saved_state
+    }
+
     fn data_dir_path(&self) -> String {
         "${XDG_DATA_HOME:-$HOME/.local/share}/zellij-harpoon".to_string()
     }
@@ -82,13 +91,18 @@ impl Persistence {
         match serde_json::from_str::<Vec<PaneBookmark>>(content) {
             Ok(bookmarks) => {
                 self.pending_bookmarks = bookmarks;
+                self.last_saved_state = self
+                    .pending_bookmarks
+                    .iter()
+                    .map(|b| (b.tab_name.clone(), b.pane_title.clone()))
+                    .collect();
                 Ok(())
             }
             Err(e) => Err(PersistenceError::LoadFromDiskFailed(e)),
         }
     }
 
-    pub fn save_to_disk(&self, session_name: &Option<String>, panes: &[Pane]) {
+    pub fn save_to_disk(&mut self, session_name: &Option<String>, panes: &[Pane]) {
         let Some(file_path) = self.session_file_path(session_name) else {
             return;
         };
@@ -99,6 +113,7 @@ impl Persistence {
                 pane_title: p.pane_info.title.clone(),
             })
             .collect();
+
         let json = serde_json::to_string(&bookmarks).unwrap_or_else(|_| "[]".to_string());
         let cmd = format!(
             "mkdir -p {} && printf '%s' \"$1\" > {}",
@@ -108,6 +123,11 @@ impl Persistence {
         let mut context = BTreeMap::new();
         context.insert("source".to_string(), "save".to_string());
         run_command(&["sh", "-c", &cmd, "_", &json], context);
+
+        self.last_saved_state = bookmarks
+            .iter()
+            .map(|b| (b.tab_name.clone(), b.pane_title.clone()))
+            .collect();
     }
 }
 

@@ -129,16 +129,13 @@ impl Persistence {
             })
             .collect();
         let json = serde_json::to_string(&bookmarks).unwrap_or_else(|_| "[]".to_string());
-        // Escape single quotes for shell: ' → '\''
-        let escaped_json = json.replace('\'', "'\\''");
         let cmd = format!(
-            "mkdir -p {} && printf '%s' '{}' > {}",
+            "mkdir -p {} && printf '%s' \"$1\" > {}",
             self.data_dir_path(),
-            escaped_json,
             file_path,
         );
         let mut context = BTreeMap::new();
         context.insert("source".to_string(), "save".to_string());
-        run_command(&["sh", "-c", &cmd], context);
+        run_command(&["sh", "-c", &cmd, "_", &json], context);
     }
 }

@@ -1,4 +1,7 @@
+pub(crate) mod persistence;
+
 use core::fmt;
+use persistence::Persistence;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -58,7 +61,10 @@ fn get_valid_panes(
     for pane in panes.clone() {
         // Iterate over all panes, and find corresponding tab and pane based on id
         // update it in case the info has changed, and if they are not there do not add them.
-        if let Some(tab_info) = tab_infos.iter().find(|t| t.position == pane.tab_info.position) {
+        if let Some(tab_info) = tab_infos
+            .iter()
+            .find(|t| t.position == pane.tab_info.position)
+        {
             if let Some(other_panes) = pane_manifest.panes.get(&pane.tab_info.position) {
                 if let Some(pane_info) = other_panes
                     .iter()
@@ -85,6 +91,8 @@ struct State {
     focused_pane: Option<Pane>,
     tab_info: Option<Vec<TabInfo>>,
     pane_manifest: Option<PaneManifest>,
+    session_name: Option<String>,
+    persistence: Persistence,
 }
 
 impl State {
@@ -116,6 +124,15 @@ impl State {
         let panes = get_valid_panes(&self.panes.clone(), &pane_manifest, &tab_info);
         self.panes = panes;
 
+        // Match pending bookmarks to live panes
+        let new_panes =
+            self.persistence
+                .match_pending_bookmarks(&self.panes, &pane_manifest, &tab_info);
+        if !new_panes.is_empty() {
+            self.panes.extend(new_panes);
+            self.sort_panes();
+        }
+
         // Update currently focused pane
         let tab_info = get_focused_tab(&tab_info)?;
         let pane_info = get_focused_pane(tab_info.position, &pane_manifest)?;
@@ -126,13 +143,18 @@ impl State {
 
         // Set default location of selected idx to currently focused pane
         if let Some(focused_pane) = &self.focused_pane {
-            for (idx,pane) in self.panes.iter().enumerate() {
+            for (idx, pane) in self.panes.iter().enumerate() {
                 if pane.pane_info.id == focused_pane.pane_info.id {
                     self.selected = idx;
                 }
             }
-        }else{
+        } else {
             self.selected = 0;
+        }
+
+        if self.persistence.has_changed(&self.panes) {
+            self.persistence
+                .save_to_disk(&self.session_name, &self.panes);
         }
 
         Some(())
@@ -148,7 +170,13 @@ impl ZellijPlugin for State {
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
         ]);
-        subscribe(&[EventType::Key, EventType::TabUpdate, EventType::PaneUpdate]);
+        subscribe(&[
+            EventType::Key,
+            EventType::TabUpdate,
+            EventType::PaneUpdate,
+            EventType::SessionUpdate,
+            EventType::RunCommandResult,
+        ]);
 
         let plugin_ids = get_plugin_ids();
         rename_plugin_pane(plugin_ids.plugin_id, "harpoon");
@@ -166,6 +194,28 @@ impl ZellijPlugin for State {
                 self.pane_manifest = Some(pane_manifest);
                 self.update_panes();
                 should_render = true;
+            }
+            Event::SessionUpdate(session_infos, _) => {
+                if self.session_name.is_none() {
+                    if let Some(current) = session_infos.iter().find(|s| s.is_current_session) {
+                        self.session_name = Some(current.name.clone());
+                        self.persistence.load_from_disk(&self.session_name);
+                    }
+                }
+            }
+            Event::RunCommandResult(_exit_code, stdout, _stderr, context) => {
+                if context.get("source").map(|s| s.as_str()) == Some("load") {
+                    let content = String::from_utf8_lossy(&stdout);
+                    match self.persistence.on_load_command(&content) {
+                        Ok(_) => {
+                            self.update_panes();
+                            should_render = true;
+                        }
+                        Err(e) => {
+                            eprintln!("{e}");
+                        }
+                    }
+                }
             }
             Event::Key(key) => match key.bare_key {
                 BareKey::Char('A') => {
@@ -190,6 +240,8 @@ impl ZellijPlugin for State {
                         }
                     }
                     self.sort_panes();
+                    self.persistence
+                        .save_to_disk(&self.session_name, &self.panes);
                     should_render = true;
                     hide_self();
                 }
@@ -199,6 +251,8 @@ impl ZellijPlugin for State {
                         if !panes_ids.contains(&pane.pane_info.id) {
                             self.panes.push(pane.clone());
                             self.sort_panes();
+                            self.persistence
+                                .save_to_disk(&self.session_name, &self.panes);
                         }
                     }
                     should_render = true;
@@ -207,6 +261,8 @@ impl ZellijPlugin for State {
                 BareKey::Char('d') => {
                     if self.selected < self.panes.len() {
                         self.panes.remove(self.selected);
+                        self.persistence
+                            .save_to_disk(&self.session_name, &self.panes);
                     }
                     if self.panes.len() > 0 {
                         self.select_up();
@@ -311,7 +367,10 @@ fn build_narrow_hints() -> (String, Vec<std::ops::Range<usize>>) {
     build_hint_string(&parts, " ")
 }
 
-fn build_hint_string(parts: &[(&str, &str)], separator: &str) -> (String, Vec<std::ops::Range<usize>>) {
+fn build_hint_string(
+    parts: &[(&str, &str)],
+    separator: &str,
+) -> (String, Vec<std::ops::Range<usize>>) {
     let mut result = String::new();
     let mut key_ranges = Vec::new();
 

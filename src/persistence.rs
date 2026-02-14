@@ -42,48 +42,19 @@ impl Persistence {
             return Vec::new();
         }
 
-        let current_pane_ids: Vec<u32> = panes.iter().map(|p| p.pane_info.id).collect();
-        let mut matched_indices = Vec::new();
-        let mut matched_pane_ids: Vec<u32> = Vec::new();
-        let mut new_panes = Vec::new();
+        let mut current_pane_ids: Vec<u32> = panes.iter().map(|p| p.pane_info.id).collect();
+        let mut new_panes: Vec<Pane> = Vec::new();
 
-        for (bookmark_idx, bookmark) in self.pending_bookmarks.iter().enumerate() {
-            for (tab_position, panes) in &pane_manifest.panes {
-                if let Some(tab) = tab_infos.iter().find(|t| t.position == *tab_position) {
-                    if tab.name != bookmark.tab_name {
-                        continue;
-                    }
-                    for pane in panes {
-                        if pane.is_plugin {
-                            continue;
-                        }
-                        if pane.title != bookmark.pane_title {
-                            continue;
-                        }
-                        if current_pane_ids.contains(&pane.id)
-                            || matched_pane_ids.contains(&pane.id)
-                        {
-                            continue;
-                        }
-                        new_panes.push(Pane {
-                            pane_info: pane.clone(),
-                            tab_info: tab.clone(),
-                        });
-                        matched_pane_ids.push(pane.id);
-                        matched_indices.push(bookmark_idx);
-                        break;
-                    }
+        self.pending_bookmarks.retain(|bookmark| {
+            match find_pane_for_bookmark(bookmark, pane_manifest, tab_infos, &current_pane_ids) {
+                Some(pane) => {
+                    current_pane_ids.push(pane.pane_info.id);
+                    new_panes.push(pane);
+                    false
                 }
-                if matched_indices.last() == Some(&bookmark_idx) {
-                    break;
-                }
+                None => true,
             }
-        }
-
-        // Remove matched bookmarks in reverse order to preserve indices
-        for idx in matched_indices.into_iter().rev() {
-            self.pending_bookmarks.remove(idx);
-        }
+        });
 
         new_panes
     }
@@ -138,4 +109,35 @@ impl Persistence {
         context.insert("source".to_string(), "save".to_string());
         run_command(&["sh", "-c", &cmd, "_", &json], context);
     }
+}
+
+fn find_pane_for_bookmark(
+    bookmark: &PaneBookmark,
+    pane_manifest: &PaneManifest,
+    tab_infos: &[TabInfo],
+    current_pane_ids: &[u32],
+) -> Option<Pane> {
+    for (tab_position, panes) in &pane_manifest.panes {
+        let Some(tab) = tab_infos.iter().find(|t| t.position == *tab_position) else {
+            continue;
+        };
+        if tab.name != bookmark.tab_name {
+            continue;
+        }
+
+        let matched_pane = panes
+            .iter()
+            .find(|p| {
+                !p.is_plugin && p.title == bookmark.pane_title && !current_pane_ids.contains(&p.id)
+            })
+            .map(|pane| Pane {
+                pane_info: pane.clone(),
+                tab_info: tab.clone(),
+            });
+
+        if matched_pane.is_some() {
+            return matched_pane;
+        }
+    }
+    None
 }

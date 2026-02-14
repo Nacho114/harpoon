@@ -1,4 +1,7 @@
+pub(crate) mod persistence;
+
 use core::fmt;
+use persistence::Persistence;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -12,12 +15,6 @@ use zellij_tile::prelude::*;
 /// globally unique identifier.
 ///
 /// Docs: https://docs.rs/zellij-tile/latest/zellij_tile/prelude/struct.PaneInfo.html
-#[derive(Clone, Serialize, Deserialize)]
-struct PaneBookmark {
-    tab_name: String,
-    pane_title: String,
-}
-
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Pane {
     pub pane_info: PaneInfo,
@@ -108,7 +105,7 @@ struct State {
     tab_info: Option<Vec<TabInfo>>,
     pane_manifest: Option<PaneManifest>,
     session_name: Option<String>,
-    pending_bookmarks: Vec<PaneBookmark>,
+    persistence: Persistence,
 }
 
 impl State {
@@ -152,7 +149,13 @@ impl State {
         self.panes = get_valid_panes(&self.panes.clone(), &pane_manifest, &tab_info);
 
         // Match pending bookmarks to live panes (restores panes after session reload)
-        self.match_pending_bookmarks(&pane_manifest, &tab_info);
+        let new_panes =
+            self.persistence
+                .match_pending_bookmarks(&self.panes, &pane_manifest, &tab_info);
+        if !new_panes.is_empty() {
+            self.panes.extend(new_panes);
+            self.sort_panes();
+        }
 
         // Track which pane the user was in before harpoon opened
         let focused_tab = get_focused_tab(&tab_info)?;
@@ -171,103 +174,6 @@ impl State {
         self.clamp_selected();
 
         Some(())
-    }
-
-    fn match_pending_bookmarks(&mut self, pane_manifest: &PaneManifest, tab_infos: &[TabInfo]) {
-        if self.pending_bookmarks.is_empty() {
-            return;
-        }
-
-        let current_pane_ids: Vec<u32> = self.panes.iter().map(|p| p.pane_info.id).collect();
-        let mut matched_indices = Vec::new();
-        let mut matched_pane_ids: Vec<u32> = Vec::new();
-
-        for (bookmark_idx, bookmark) in self.pending_bookmarks.iter().enumerate() {
-            for (tab_position, panes) in &pane_manifest.panes {
-                if let Some(tab) = tab_infos.iter().find(|t| t.position == *tab_position) {
-                    if tab.name != bookmark.tab_name {
-                        continue;
-                    }
-                    for pane in panes {
-                        if pane.is_plugin {
-                            continue;
-                        }
-                        if pane.title != bookmark.pane_title {
-                            continue;
-                        }
-                        if current_pane_ids.contains(&pane.id)
-                            || matched_pane_ids.contains(&pane.id)
-                        {
-                            continue;
-                        }
-                        self.panes.push(Pane {
-                            pane_info: pane.clone(),
-                            tab_info: tab.clone(),
-                        });
-                        matched_pane_ids.push(pane.id);
-                        matched_indices.push(bookmark_idx);
-                        break;
-                    }
-                }
-                if matched_indices.last() == Some(&bookmark_idx) {
-                    break;
-                }
-            }
-        }
-
-        // Remove matched bookmarks in reverse order to preserve indices
-        for idx in matched_indices.into_iter().rev() {
-            self.pending_bookmarks.remove(idx);
-        }
-
-        if !matched_pane_ids.is_empty() {
-            self.sort_panes();
-        }
-    }
-
-    fn data_dir_path(&self) -> String {
-        "${XDG_DATA_HOME:-$HOME/.local/share}/zellij-harpoon".to_string()
-    }
-
-    fn session_file_path(&self) -> Option<String> {
-        let session = self.session_name.as_ref()?;
-        Some(format!("{}/{}.json", self.data_dir_path(), session))
-    }
-
-    fn load_from_disk(&self) {
-        let Some(file_path) = self.session_file_path() else {
-            return;
-        };
-        let cmd = format!("cat {file_path} 2>/dev/null || echo '[]'");
-        let mut context = BTreeMap::new();
-        context.insert("source".to_string(), "load".to_string());
-        run_command(&["sh", "-c", &cmd], context);
-    }
-
-    fn save_to_disk(&self) {
-        let Some(file_path) = self.session_file_path() else {
-            return;
-        };
-        let bookmarks: Vec<PaneBookmark> = self
-            .panes
-            .iter()
-            .map(|p| PaneBookmark {
-                tab_name: p.tab_info.name.clone(),
-                pane_title: p.pane_info.title.clone(),
-            })
-            .collect();
-        let json = serde_json::to_string(&bookmarks).unwrap_or_else(|_| "[]".to_string());
-        // Escape single quotes for shell: ' → '\''
-        let escaped_json = json.replace('\'', "'\\''");
-        let cmd = format!(
-            "mkdir -p {} && printf '%s' '{}' > {}",
-            self.data_dir_path(),
-            escaped_json,
-            file_path,
-        );
-        let mut context = BTreeMap::new();
-        context.insert("source".to_string(), "save".to_string());
-        run_command(&["sh", "-c", &cmd], context);
     }
 }
 
@@ -313,19 +219,21 @@ impl ZellijPlugin for State {
                 if self.session_name.is_none() {
                     if let Some(current) = session_infos.iter().find(|s| s.is_current_session) {
                         self.session_name = Some(current.name.clone());
-                        self.load_from_disk();
+                        self.persistence.load_from_disk(&self.session_name);
                     }
                 }
             }
             Event::RunCommandResult(_exit_code, stdout, _stderr, context) => {
                 if context.get("source").map(|s| s.as_str()) == Some("load") {
                     let content = String::from_utf8_lossy(&stdout);
-                    if let Ok(bookmarks) = serde_json::from_str::<Vec<PaneBookmark>>(&content) {
-                        self.pending_bookmarks = bookmarks;
-                        self.update_panes();
-                        should_render = true;
-                    } else {
-                        eprintln!("[harpoon] failed to parse saved bookmarks");
+                    match self.persistence.on_load_command(&content) {
+                        Ok(_) => {
+                            self.update_panes();
+                            should_render = true;
+                        }
+                        Err(e) => {
+                            eprintln!("{e}");
+                        }
                     }
                 }
             }
@@ -350,7 +258,8 @@ impl ZellijPlugin for State {
                         }
                     }
                     self.sort_panes();
-                    self.save_to_disk();
+                    self.persistence
+                        .save_to_disk(&self.session_name, &self.panes);
                     should_render = true;
                     hide_self();
                 }
@@ -362,7 +271,8 @@ impl ZellijPlugin for State {
                         if !self.panes.iter().any(|p| p.pane_info.id == pane.pane_info.id) {
                             self.panes.push(pane.clone());
                             self.sort_panes();
-                            self.save_to_disk();
+                            self.persistence
+                                .save_to_disk(&self.session_name, &self.panes);
                         }
                     }
                     should_render = true;
@@ -371,7 +281,8 @@ impl ZellijPlugin for State {
                 BareKey::Char('d') => {
                     if self.selected < self.panes.len() {
                         self.panes.remove(self.selected);
-                        self.save_to_disk();
+                        self.persistence
+                            .save_to_disk(&self.session_name, &self.panes);
                     }
                     self.clamp_selected();
                     should_render = true;

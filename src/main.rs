@@ -1,4 +1,7 @@
+pub(crate) mod persistence;
+
 use core::fmt;
+use persistence::Persistence;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -101,6 +104,8 @@ struct State {
     focused_pane: Option<Pane>,
     tab_info: Option<Vec<TabInfo>>,
     pane_manifest: Option<PaneManifest>,
+    session_name: Option<String>,
+    persistence: Persistence,
 }
 
 impl State {
@@ -143,6 +148,15 @@ impl State {
         // Drop any panes that no longer exist and refresh tab info for moved ones
         self.panes = get_valid_panes(&self.panes.clone(), &pane_manifest, &tab_info);
 
+        // Match pending bookmarks to live panes (restores panes after session reload)
+        let new_panes =
+            self.persistence
+                .match_pending_bookmarks(&self.panes, &pane_manifest, &tab_info);
+        if !new_panes.is_empty() {
+            self.panes.extend(new_panes);
+            self.sort_panes();
+        }
+
         // Track which pane the user was in before harpoon opened
         let focused_tab = get_focused_tab(&tab_info)?;
         let focused_pane_info = get_focused_pane(focused_tab.position, &pane_manifest)?;
@@ -158,6 +172,11 @@ impl State {
             }
         }
         self.clamp_selected();
+
+        if self.persistence.has_changed(&self.panes) {
+            self.persistence
+                .save_to_disk(&self.session_name, &self.panes);
+        }
 
         Some(())
     }
@@ -177,6 +196,8 @@ impl ZellijPlugin for State {
             EventType::TabUpdate,
             EventType::PaneUpdate,
             EventType::PermissionRequestResult,
+            EventType::SessionUpdate,
+            EventType::RunCommandResult,
         ]);
     }
 
@@ -199,6 +220,28 @@ impl ZellijPlugin for State {
                 let plugin_ids = get_plugin_ids();
                 rename_plugin_pane(plugin_ids.plugin_id, "harpoon");
             }
+            Event::SessionUpdate(session_infos, _) => {
+                if self.session_name.is_none() {
+                    if let Some(current) = session_infos.iter().find(|s| s.is_current_session) {
+                        self.session_name = Some(current.name.clone());
+                        self.persistence.load_from_disk(&self.session_name);
+                    }
+                }
+            }
+            Event::RunCommandResult(_exit_code, stdout, _stderr, context) => {
+                if context.get("source").map(|s| s.as_str()) == Some("load") {
+                    let content = String::from_utf8_lossy(&stdout);
+                    match self.persistence.on_load_command(&content) {
+                        Ok(_) => {
+                            self.update_panes();
+                            should_render = true;
+                        }
+                        Err(e) => {
+                            eprintln!("{e}");
+                        }
+                    }
+                }
+            }
             Event::Key(key) => match key.bare_key {
                 BareKey::Char('A') => {
                     // Add all terminal panes from all tabs that aren't already tracked
@@ -220,6 +263,8 @@ impl ZellijPlugin for State {
                         }
                     }
                     self.sort_panes();
+                    self.persistence
+                        .save_to_disk(&self.session_name, &self.panes);
                     should_render = true;
                     hide_self();
                 }
@@ -231,6 +276,8 @@ impl ZellijPlugin for State {
                         if !self.panes.iter().any(|p| p.pane_info.id == pane.pane_info.id) {
                             self.panes.push(pane.clone());
                             self.sort_panes();
+                            self.persistence
+                                .save_to_disk(&self.session_name, &self.panes);
                         }
                     }
                     should_render = true;
@@ -239,6 +286,8 @@ impl ZellijPlugin for State {
                 BareKey::Char('d') => {
                     if self.selected < self.panes.len() {
                         self.panes.remove(self.selected);
+                        self.persistence
+                            .save_to_disk(&self.session_name, &self.panes);
                     }
                     self.clamp_selected();
                     should_render = true;
@@ -347,7 +396,10 @@ fn build_narrow_hints() -> (String, Vec<std::ops::Range<usize>>) {
     build_hint_string(&parts, " ")
 }
 
-fn build_hint_string(parts: &[(&str, &str)], separator: &str) -> (String, Vec<std::ops::Range<usize>>) {
+fn build_hint_string(
+    parts: &[(&str, &str)],
+    separator: &str,
+) -> (String, Vec<std::ops::Range<usize>>) {
     let mut result = String::new();
     let mut key_ranges = Vec::new();
 

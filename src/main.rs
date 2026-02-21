@@ -4,6 +4,14 @@ use std::collections::BTreeMap;
 
 use zellij_tile::prelude::*;
 
+/// A tracked pane, combining zellij's PaneInfo with its parent TabInfo.
+///
+/// Per the zellij API docs, `PaneInfo.id` combined with `PaneInfo.is_plugin`
+/// uniquely identifies a pane across the entire session. Since harpoon only
+/// tracks terminal panes (!is_plugin), `pane_info.id` alone is a stable,
+/// globally unique identifier.
+///
+/// Docs: https://docs.rs/zellij-tile/latest/zellij_tile/prelude/struct.PaneInfo.html
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Pane {
     pub pane_info: PaneInfo,
@@ -18,59 +26,67 @@ impl fmt::Display for Pane {
 
 //<--------- TODO: Replace with official functions once available
 
+/// Returns the currently active tab, if any.
+///
+/// `TabInfo.active` is set by zellij on the tab the user is currently viewing.
+/// Docs: https://docs.rs/zellij-tile/latest/zellij_tile/prelude/struct.TabInfo.html
 fn get_focused_tab(tab_infos: &Vec<TabInfo>) -> Option<TabInfo> {
-    for tab in tab_infos {
-        if tab.active {
-            return Some(tab.clone());
-        }
-    }
-    return None;
+    tab_infos.iter().find(|t| t.active).cloned()
 }
 
+/// Returns the focused terminal pane in the given tab.
+///
+/// `PaneManifest.panes` is a HashMap keyed by tab position (0-indexed), containing
+/// all panes in that tab including tiled, floating, and suppressed panes.
+///
+/// When harpoon itself has focus (it's a plugin pane), no terminal pane will have
+/// `is_focused = true`, so we fall back to the first non-plugin pane in the tab.
+///
+/// Docs: https://docs.rs/zellij-tile/latest/zellij_tile/prelude/struct.PaneManifest.html
 fn get_focused_pane(tab_position: usize, pane_manifest: &PaneManifest) -> Option<PaneInfo> {
     let panes = pane_manifest.panes.get(&tab_position)?;
     // First, try to find a focused non-plugin pane
-    for pane in panes {
-        if pane.is_focused && !pane.is_plugin {
-            return Some(pane.clone());
-        }
+    if let Some(pane) = panes.iter().find(|p| p.is_focused && !p.is_plugin) {
+        return Some(pane.clone());
     }
-    // Fallback: if no focused non-plugin pane (e.g., plugin has focus),
-    // return the first non-plugin pane
-    for pane in panes {
-        if !pane.is_plugin {
-            return Some(pane.clone());
-        }
-    }
-    None
+    // Fallback: if no focused non-plugin pane (e.g. harpoon itself has focus),
+    // return the first non-plugin pane in the tab
+    panes.iter().find(|p| !p.is_plugin).cloned()
 }
 
 //--------->
 
 // ----------------------------------- Update ------------------------------------------------
 
+/// Filters the stored pane list, removing any panes that no longer exist and
+/// updating tab info for panes whose tab was moved/reordered.
+///
+/// `PaneInfo.id` is unique per session when combined with `is_plugin`. Since we
+/// only track terminal panes (!is_plugin), `id` alone is sufficient to identify
+/// a pane across tab position changes.
+///
+/// Docs: https://docs.rs/zellij-tile/latest/zellij_tile/prelude/struct.PaneInfo.html
 fn get_valid_panes(
     panes: &Vec<Pane>,
     pane_manifest: &PaneManifest,
     tab_infos: &Vec<TabInfo>,
 ) -> Vec<Pane> {
     let mut new_panes: Vec<Pane> = Vec::default();
-    for pane in panes.clone() {
-        // Iterate over all panes, and find corresponding tab and pane based on id
-        // update it in case the info has changed, and if they are not there do not add them.
-        if let Some(tab_info) = tab_infos.iter().find(|t| t.position == pane.tab_info.position) {
-            if let Some(other_panes) = pane_manifest.panes.get(&pane.tab_info.position) {
-                if let Some(pane_info) = other_panes
-                    .iter()
-                    .find(|p| !p.is_plugin & (p.id == pane.pane_info.id))
-                {
-                    let pane_info = pane_info.clone();
-                    let tab_info = tab_info.clone();
-                    let new_pane = Pane {
-                        pane_info,
-                        tab_info,
-                    };
-                    new_panes.push(new_pane);
+    for pane in panes {
+        // Search all tabs for this pane by its session-unique ID.
+        // Tab positions can change when tabs are created, deleted, or moved,
+        // so we search the full manifest rather than relying on the stored position.
+        for (tab_position, tab_panes) in &pane_manifest.panes {
+            if let Some(pane_info) = tab_panes
+                .iter()
+                .find(|p| !p.is_plugin && p.id == pane.pane_info.id)
+            {
+                if let Some(tab_info) = tab_infos.iter().find(|t| t.position == *tab_position) {
+                    new_panes.push(Pane {
+                        pane_info: pane_info.clone(),
+                        tab_info: tab_info.clone(),
+                    });
+                    break;
                 }
             }
         }
@@ -88,52 +104,60 @@ struct State {
 }
 
 impl State {
+    fn clamp_selected(&mut self) {
+        if self.panes.is_empty() {
+            self.selected = 0;
+        } else if self.selected >= self.panes.len() {
+            self.selected = self.panes.len() - 1;
+        }
+    }
+
     fn select_down(&mut self) {
+        if self.panes.is_empty() {
+            return;
+        }
         self.selected = (self.selected + 1) % self.panes.len();
     }
 
     fn select_up(&mut self) {
+        if self.panes.is_empty() {
+            return;
+        }
         if self.selected == 0 {
             self.selected = self.panes.len() - 1;
             return;
         }
-        self.selected = self.selected - 1;
+        self.selected -= 1;
     }
 
     fn sort_panes(&mut self) {
-        self.panes.sort_by(|x, y| {
-            (x.tab_info.position)
-                .partial_cmp(&y.tab_info.position)
-                .unwrap()
-        });
+        self.panes.sort_by(|x, y| x.tab_info.position.cmp(&y.tab_info.position));
     }
 
-    /// Update panes updates the pane states based on the latest pane_manifest and tab_info
+    /// Reconciles the stored pane list against the latest manifest and updates
+    /// the currently focused pane. Called on every TabUpdate and PaneUpdate event.
     fn update_panes(&mut self) -> Option<()> {
-        // Update panes to filter our invalid panes (e.g. tab/pane was closed).
         let pane_manifest = self.pane_manifest.clone()?;
         let tab_info = self.tab_info.clone()?;
-        let panes = get_valid_panes(&self.panes.clone(), &pane_manifest, &tab_info);
-        self.panes = panes;
 
-        // Update currently focused pane
-        let tab_info = get_focused_tab(&tab_info)?;
-        let pane_info = get_focused_pane(tab_info.position, &pane_manifest)?;
+        // Drop any panes that no longer exist and refresh tab info for moved ones
+        self.panes = get_valid_panes(&self.panes.clone(), &pane_manifest, &tab_info);
+
+        // Track which pane the user was in before harpoon opened
+        let focused_tab = get_focused_tab(&tab_info)?;
+        let focused_pane_info = get_focused_pane(focused_tab.position, &pane_manifest)?;
         self.focused_pane = Some(Pane {
-            pane_info,
-            tab_info,
+            pane_info: focused_pane_info,
+            tab_info: focused_tab,
         });
 
-        // Set default location of selected idx to currently focused pane
-        if let Some(focused_pane) = &self.focused_pane {
-            for (idx,pane) in self.panes.iter().enumerate() {
-                if pane.pane_info.id == focused_pane.pane_info.id {
-                    self.selected = idx;
-                }
+        // Move cursor to the focused pane if it's in the list
+        if let Some(focused) = &self.focused_pane {
+            if let Some(idx) = self.panes.iter().position(|p| p.pane_info.id == focused.pane_info.id) {
+                self.selected = idx;
             }
-        }else{
-            self.selected = 0;
         }
+        self.clamp_selected();
 
         Some(())
     }
@@ -148,10 +172,12 @@ impl ZellijPlugin for State {
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
         ]);
-        subscribe(&[EventType::Key, EventType::TabUpdate, EventType::PaneUpdate]);
-
-        let plugin_ids = get_plugin_ids();
-        rename_plugin_pane(plugin_ids.plugin_id, "harpoon");
+        subscribe(&[
+            EventType::Key,
+            EventType::TabUpdate,
+            EventType::PaneUpdate,
+            EventType::PermissionRequestResult,
+        ]);
     }
 
     fn update(&mut self, event: Event) -> bool {
@@ -167,18 +193,22 @@ impl ZellijPlugin for State {
                 self.update_panes();
                 should_render = true;
             }
+            Event::PermissionRequestResult(PermissionStatus::Granted) => {
+                // Rename the pane after permissions are granted, since
+                // rename_plugin_pane requires ChangeApplicationState permission.
+                let plugin_ids = get_plugin_ids();
+                rename_plugin_pane(plugin_ids.plugin_id, "harpoon");
+            }
             Event::Key(key) => match key.bare_key {
                 BareKey::Char('A') => {
-                    let current_pane_ids: Vec<u32> =
-                        self.panes.iter().map(|p| p.pane_info.id).collect();
+                    // Add all terminal panes from all tabs that aren't already tracked
+                    let current_ids: Vec<u32> = self.panes.iter().map(|p| p.pane_info.id).collect();
                     if let Some(pane_manifest) = &self.pane_manifest {
                         if let Some(tab_info) = &self.tab_info {
                             for (tab_position, panes) in &pane_manifest.panes {
-                                if let Some(tab) =
-                                    tab_info.iter().find(|t| t.position == *tab_position)
-                                {
+                                if let Some(tab) = tab_info.iter().find(|t| t.position == *tab_position) {
                                     for pane in panes {
-                                        if !pane.is_plugin && !current_pane_ids.contains(&pane.id) {
+                                        if !pane.is_plugin && !current_ids.contains(&pane.id) {
                                             self.panes.push(Pane {
                                                 pane_info: pane.clone(),
                                                 tab_info: tab.clone(),
@@ -194,9 +224,11 @@ impl ZellijPlugin for State {
                     hide_self();
                 }
                 BareKey::Char('a') => {
-                    let panes_ids: Vec<u32> = self.panes.iter().map(|p| p.pane_info.id).collect();
+                    // Add the currently focused terminal pane if not already tracked.
+                    // Since pane IDs are session-unique for terminal panes, we only
+                    // need to check the ID (not tab position).
                     if let Some(pane) = &self.focused_pane {
-                        if !panes_ids.contains(&pane.pane_info.id) {
+                        if !self.panes.iter().any(|p| p.pane_info.id == pane.pane_info.id) {
                             self.panes.push(pane.clone());
                             self.sort_panes();
                         }
@@ -208,9 +240,7 @@ impl ZellijPlugin for State {
                     if self.selected < self.panes.len() {
                         self.panes.remove(self.selected);
                     }
-                    if self.panes.len() > 0 {
-                        self.select_up();
-                    }
+                    self.clamp_selected();
                     should_render = true;
                 }
                 BareKey::Char('c') | BareKey::Esc => {
@@ -229,9 +259,7 @@ impl ZellijPlugin for State {
                     }
                 }
                 BareKey::Enter | BareKey::Char('l') => {
-                    let pane = self.panes.get(self.selected);
-
-                    if let Some(pane) = pane {
+                    if let Some(pane) = self.panes.get(self.selected) {
                         hide_self();
                         // TODO: This has a bug on macOS with hidden panes
                         focus_terminal_pane(pane.pane_info.id, true);
@@ -246,13 +274,21 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        // Note: y=0 overlaps with the zellij pane frame/title bar and is not visible,
+        // so we start rendering from y=1.
+        let header = format!("==== {} panes ====", self.panes.len());
+        let x = cols.saturating_sub(header.len()) / 2;
+        print_text_with_coordinates(Text::new(&header), x, 0, None, None);
+        let mut y = 1;
+
         for (idx, pane) in self.panes.iter().enumerate() {
             let text = if idx == self.selected {
-                Text::new(pane.to_string()).selected()
+                Text::new(&pane.to_string()).selected()
             } else {
-                Text::new(pane.to_string())
+                Text::new(&pane.to_string())
             };
-            print_text_with_coordinates(text, 0, idx, None, None);
+            print_text_with_coordinates(text, 0, y, None, None);
+            y += 1;
         }
 
         let hint_y = rows.saturating_sub(1);

@@ -349,7 +349,7 @@ impl ZellijPlugin for State {
                     self.clamp_selected();
                     should_render = true;
                 }
-                BareKey::Char('s') => {
+                BareKey::Char('s') if key.has_modifiers(&[KeyModifier::Ctrl]) => {
                     self.persistence.config.cross_session = !self.persistence.config.cross_session;
                     self.persistence.save_config();
                     if self.cross_session() {
@@ -461,7 +461,7 @@ fn build_wide_hints(session_label: &str) -> (String, Vec<std::ops::Range<usize>>
         ("<a>", " add pane"),
         ("<A>", " add all"),
         ("<d>", " delete"),
-        ("<s>", session_hint.as_str()),
+        ("<C-s>", session_hint.as_str()),
         ("<j/k>", " navigate"),
         ("<Enter>", " focus"),
         ("<Esc>", " close"),
@@ -475,7 +475,7 @@ fn build_medium_hints(session_label: &str) -> (String, Vec<std::ops::Range<usize
         ("<a>", " add"),
         ("<A>", " all"),
         ("<d>", " del"),
-        ("<s>", session_hint.as_str()),
+        ("<C-s>", session_hint.as_str()),
         ("<j/k>", " nav"),
         ("<Enter>", " go"),
         ("<Esc>", " quit"),
@@ -488,7 +488,7 @@ fn build_narrow_hints(session_label: &str) -> (String, Vec<std::ops::Range<usize
     let parts = [
         ("<a>", " add"),
         ("<d>", " del"),
-        ("<s>", session_hint.as_str()),
+        ("<C-s>", session_hint.as_str()),
         ("<Enter>", " go"),
         ("<Esc>", ""),
     ];

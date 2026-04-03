@@ -11,10 +11,26 @@ struct PaneBookmark {
     pane_title: String,
 }
 
+#[derive(Clone, Serialize, Deserialize, Default)]
+pub struct HarpoonConfig {
+    #[serde(default)]
+    pub cross_session: bool,
+}
+
+/// A pane loaded from another session's bookmark file.
+#[derive(Clone)]
+pub struct RemotePane {
+    pub session_name: String,
+    pub tab_name: String,
+    pub pane_title: String,
+}
+
 #[derive(Default)]
 pub struct Persistence {
     pending_bookmarks: Vec<PaneBookmark>,
     last_saved_state: Vec<(String, String)>,
+    pub config: HarpoonConfig,
+    pub remote_panes: Vec<RemotePane>,
 }
 
 #[derive(Debug)]
@@ -99,6 +115,72 @@ impl Persistence {
                 Ok(())
             }
             Err(e) => Err(PersistenceError::LoadFromDiskFailed(e)),
+        }
+    }
+
+    pub fn load_config(&self) {
+        let cmd = format!(
+            "cat {}/config.json 2>/dev/null || echo '{{}}'",
+            self.data_dir_path()
+        );
+        let mut context = BTreeMap::new();
+        context.insert("source".to_string(), "load_config".to_string());
+        run_command(&["sh", "-c", &cmd], context);
+    }
+
+    pub fn on_load_config_command(&mut self, content: &str) {
+        self.config = serde_json::from_str::<HarpoonConfig>(content).unwrap_or_default();
+    }
+
+    pub fn save_config(&self) {
+        let json =
+            serde_json::to_string(&self.config).unwrap_or_else(|_| "{}".to_string());
+        let cmd = format!(
+            "mkdir -p {} && printf '%s' \"$1\" > {}/config.json",
+            self.data_dir_path(),
+            self.data_dir_path(),
+        );
+        let mut context = BTreeMap::new();
+        context.insert("source".to_string(), "save_config".to_string());
+        run_command(&["sh", "-c", &cmd, "_", &json], context);
+    }
+
+    pub fn load_remote_panes(&self, current_session: &Option<String>) {
+        let current = current_session.as_deref().unwrap_or("");
+        let cmd = format!(
+            "for f in {dir}/*.json; do \
+                name=\"$(basename \"$f\" .json)\"; \
+                [ \"$name\" = \"config\" ] && continue; \
+                [ \"$name\" = \"{current}\" ] && continue; \
+                echo \"SESSION:$name\"; \
+                cat \"$f\"; \
+                echo; \
+            done 2>/dev/null || true",
+            dir = self.data_dir_path(),
+            current = current,
+        );
+        let mut context = BTreeMap::new();
+        context.insert("source".to_string(), "load_remote".to_string());
+        run_command(&["sh", "-c", &cmd], context);
+    }
+
+    pub fn on_load_remote_command(&mut self, content: &str) {
+        self.remote_panes.clear();
+        let mut current_session = String::new();
+        for line in content.lines() {
+            if let Some(name) = line.strip_prefix("SESSION:") {
+                current_session = name.to_string();
+            } else if !line.is_empty() && !current_session.is_empty() {
+                if let Ok(bookmarks) = serde_json::from_str::<Vec<PaneBookmark>>(line) {
+                    for b in bookmarks {
+                        self.remote_panes.push(RemotePane {
+                            session_name: current_session.clone(),
+                            tab_name: b.tab_name,
+                            pane_title: b.pane_title,
+                        });
+                    }
+                }
+            }
         }
     }
 

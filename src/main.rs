@@ -1,7 +1,7 @@
 pub(crate) mod persistence;
 
 use core::fmt;
-use persistence::Persistence;
+use persistence::{Persistence, RemotePane};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
@@ -97,6 +97,25 @@ fn get_valid_panes(
     new_panes
 }
 
+/// An entry in the harpoon list — either a local pane (current session)
+/// or a remote bookmark (another session, not yet resolved to a live pane).
+#[derive(Clone)]
+enum HarpoonEntry {
+    Local(Pane),
+    Remote(RemotePane),
+}
+
+impl fmt::Display for HarpoonEntry {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            HarpoonEntry::Local(pane) => write!(f, "{} | {}", pane.tab_info.name, pane.pane_info.title),
+            HarpoonEntry::Remote(remote) => {
+                write!(f, "[{}] {} | {}", remote.session_name, remote.tab_name, remote.pane_title)
+            }
+        }
+    }
+}
+
 #[derive(Default)]
 struct State {
     selected: usize,
@@ -106,37 +125,38 @@ struct State {
     pane_manifest: Option<PaneManifest>,
     session_name: Option<String>,
     persistence: Persistence,
+    config_loaded: bool,
 }
 
 impl State {
     fn clamp_selected(&mut self) {
-        if self.panes.is_empty() {
+        let count = self.build_entries().len();
+        if count == 0 {
             self.selected = 0;
-        } else if self.selected >= self.panes.len() {
-            self.selected = self.panes.len() - 1;
+        } else if self.selected >= count {
+            self.selected = count - 1;
         }
-    }
-
-    fn select_down(&mut self) {
-        if self.panes.is_empty() {
-            return;
-        }
-        self.selected = (self.selected + 1) % self.panes.len();
-    }
-
-    fn select_up(&mut self) {
-        if self.panes.is_empty() {
-            return;
-        }
-        if self.selected == 0 {
-            self.selected = self.panes.len() - 1;
-            return;
-        }
-        self.selected -= 1;
     }
 
     fn sort_panes(&mut self) {
         self.panes.sort_by(|x, y| x.tab_info.position.cmp(&y.tab_info.position));
+    }
+
+    fn cross_session(&self) -> bool {
+        self.persistence.config.cross_session
+    }
+
+    /// Builds the list of entries to display, combining local panes
+    /// with remote panes when cross-session mode is active.
+    fn build_entries(&self) -> Vec<HarpoonEntry> {
+        let mut entries: Vec<HarpoonEntry> =
+            self.panes.iter().cloned().map(HarpoonEntry::Local).collect();
+        if self.cross_session() {
+            for remote in &self.persistence.remote_panes {
+                entries.push(HarpoonEntry::Remote(remote.clone()));
+            }
+        }
+        entries
     }
 
     /// Reconciles the stored pane list against the latest manifest and updates
@@ -185,7 +205,13 @@ impl State {
 register_plugin!(State);
 
 impl ZellijPlugin for State {
-    fn load(&mut self, _: BTreeMap<String, String>) {
+    fn load(&mut self, config: BTreeMap<String, String>) {
+        // Layout config provides the initial default for cross_session
+        // before the persisted config.json is loaded.
+        if let Some(val) = config.get("cross_session") {
+            self.persistence.config.cross_session = val == "true";
+        }
+
         request_permission(&[
             PermissionType::RunCommands,
             PermissionType::ReadApplicationState,
@@ -219,6 +245,7 @@ impl ZellijPlugin for State {
                 // rename_plugin_pane requires ChangeApplicationState permission.
                 let plugin_ids = get_plugin_ids();
                 rename_plugin_pane(plugin_ids.plugin_id, "harpoon");
+                self.persistence.load_config();
             }
             Event::SessionUpdate(session_infos, _) => {
                 if self.session_name.is_none() {
@@ -229,17 +256,36 @@ impl ZellijPlugin for State {
                 }
             }
             Event::RunCommandResult(_exit_code, stdout, _stderr, context) => {
-                if context.get("source").map(|s| s.as_str()) == Some("load") {
-                    let content = String::from_utf8_lossy(&stdout);
-                    match self.persistence.on_load_command(&content) {
-                        Ok(_) => {
-                            self.update_panes();
-                            should_render = true;
-                        }
-                        Err(e) => {
-                            eprintln!("{e}");
+                let source = context.get("source").map(|s| s.as_str());
+                match source {
+                    Some("load") => {
+                        let content = String::from_utf8_lossy(&stdout);
+                        match self.persistence.on_load_command(&content) {
+                            Ok(_) => {
+                                self.update_panes();
+                                should_render = true;
+                            }
+                            Err(e) => {
+                                eprintln!("{e}");
+                            }
                         }
                     }
+                    Some("load_config") => {
+                        let content = String::from_utf8_lossy(&stdout);
+                        let was_cross = self.cross_session();
+                        self.persistence.on_load_config_command(&content);
+                        self.config_loaded = true;
+                        if self.cross_session() && !was_cross {
+                            self.persistence.load_remote_panes(&self.session_name);
+                        }
+                        should_render = true;
+                    }
+                    Some("load_remote") => {
+                        let content = String::from_utf8_lossy(&stdout);
+                        self.persistence.on_load_remote_command(&content);
+                        should_render = true;
+                    }
+                    _ => {}
                 }
             }
             Event::Key(key) => match key.bare_key {
@@ -284,10 +330,32 @@ impl ZellijPlugin for State {
                     hide_self();
                 }
                 BareKey::Char('d') => {
-                    if self.selected < self.panes.len() {
-                        self.panes.remove(self.selected);
-                        self.persistence
-                            .save_to_disk(&self.session_name, &self.panes);
+                    let entries = self.build_entries();
+                    if let Some(entry) = entries.get(self.selected) {
+                        match entry {
+                            HarpoonEntry::Local(_) => {
+                                // selected index maps directly to panes when it's within range
+                                if self.selected < self.panes.len() {
+                                    self.panes.remove(self.selected);
+                                    self.persistence
+                                        .save_to_disk(&self.session_name, &self.panes);
+                                }
+                            }
+                            HarpoonEntry::Remote(_) => {
+                                // Remote entries are read-only — cannot delete from here
+                            }
+                        }
+                    }
+                    self.clamp_selected();
+                    should_render = true;
+                }
+                BareKey::Char('s') => {
+                    self.persistence.config.cross_session = !self.persistence.config.cross_session;
+                    self.persistence.save_config();
+                    if self.cross_session() {
+                        self.persistence.load_remote_panes(&self.session_name);
+                    } else {
+                        self.persistence.remote_panes.clear();
                     }
                     self.clamp_selected();
                     should_render = true;
@@ -296,22 +364,40 @@ impl ZellijPlugin for State {
                     hide_self();
                 }
                 BareKey::Down | BareKey::Char('j') => {
-                    if self.panes.len() > 0 {
-                        self.select_down();
+                    let count = self.build_entries().len();
+                    if count > 0 {
+                        self.selected = (self.selected + 1) % count;
                         should_render = true;
                     }
                 }
                 BareKey::Up | BareKey::Char('k') => {
-                    if self.panes.len() > 0 {
-                        self.select_up();
+                    let count = self.build_entries().len();
+                    if count > 0 {
+                        if self.selected == 0 {
+                            self.selected = count - 1;
+                        } else {
+                            self.selected -= 1;
+                        }
                         should_render = true;
                     }
                 }
                 BareKey::Enter | BareKey::Char('l') => {
-                    if let Some(pane) = self.panes.get(self.selected) {
+                    let entries = self.build_entries();
+                    if let Some(entry) = entries.get(self.selected) {
                         hide_self();
-                        // TODO: This has a bug on macOS with hidden panes
-                        focus_terminal_pane(pane.pane_info.id, true);
+                        match entry {
+                            HarpoonEntry::Local(pane) => {
+                                // TODO: This has a bug on macOS with hidden panes
+                                focus_terminal_pane(pane.pane_info.id, true);
+                            }
+                            HarpoonEntry::Remote(remote) => {
+                                switch_session_with_focus(
+                                    &remote.session_name,
+                                    None,
+                                    None,
+                                );
+                            }
+                        }
                     }
                 }
                 _ => (),
@@ -323,36 +409,43 @@ impl ZellijPlugin for State {
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
+        let entries = self.build_entries();
+
         // Note: y=0 overlaps with the zellij pane frame/title bar and is not visible,
         // so we start rendering from y=1.
-        let header = format!("==== {} panes ====", self.panes.len());
+        let header = if self.cross_session() {
+            format!("==== {} panes (all sessions) ====", entries.len())
+        } else {
+            format!("==== {} panes ====", entries.len())
+        };
         let x = cols.saturating_sub(header.len()) / 2;
         print_text_with_coordinates(Text::new(&header), x, 0, None, None);
         let mut y = 1;
 
-        for (idx, pane) in self.panes.iter().enumerate() {
+        for (idx, entry) in entries.iter().enumerate() {
             let text = if idx == self.selected {
-                Text::new(&pane.to_string()).selected()
+                Text::new(&entry.to_string()).selected()
             } else {
-                Text::new(&pane.to_string())
+                Text::new(&entry.to_string())
             };
             print_text_with_coordinates(text, 0, y, None, None);
             y += 1;
         }
 
         let hint_y = rows.saturating_sub(1);
-        let hint_line = build_hint_line(cols);
+        let hint_line = build_hint_line(cols, self.cross_session());
         print_text_with_coordinates(hint_line, 0, hint_y, None, None);
     }
 }
 
-fn build_hint_line(cols: usize) -> Text {
+fn build_hint_line(cols: usize, cross_session: bool) -> Text {
+    let session_label = if cross_session { " on" } else { " off" };
     let (line, key_ranges) = if cols > 75 {
-        build_wide_hints()
+        build_wide_hints(session_label)
     } else if cols > 50 {
-        build_medium_hints()
+        build_medium_hints(session_label)
     } else {
-        build_narrow_hints()
+        build_narrow_hints(session_label)
     };
 
     let mut text = Text::new(&line);
@@ -362,11 +455,13 @@ fn build_hint_line(cols: usize) -> Text {
     text
 }
 
-fn build_wide_hints() -> (String, Vec<std::ops::Range<usize>>) {
+fn build_wide_hints(session_label: &str) -> (String, Vec<std::ops::Range<usize>>) {
+    let session_hint = format!(" sessions{session_label}");
     let parts = [
         ("<a>", " add pane"),
         ("<A>", " add all"),
         ("<d>", " delete"),
+        ("<s>", session_hint.as_str()),
         ("<j/k>", " navigate"),
         ("<Enter>", " focus"),
         ("<Esc>", " close"),
@@ -374,11 +469,13 @@ fn build_wide_hints() -> (String, Vec<std::ops::Range<usize>>) {
     build_hint_string(&parts, ", ")
 }
 
-fn build_medium_hints() -> (String, Vec<std::ops::Range<usize>>) {
+fn build_medium_hints(session_label: &str) -> (String, Vec<std::ops::Range<usize>>) {
+    let session_hint = format!(" sess{session_label}");
     let parts = [
         ("<a>", " add"),
         ("<A>", " all"),
         ("<d>", " del"),
+        ("<s>", session_hint.as_str()),
         ("<j/k>", " nav"),
         ("<Enter>", " go"),
         ("<Esc>", " quit"),
@@ -386,10 +483,12 @@ fn build_medium_hints() -> (String, Vec<std::ops::Range<usize>>) {
     build_hint_string(&parts, ", ")
 }
 
-fn build_narrow_hints() -> (String, Vec<std::ops::Range<usize>>) {
+fn build_narrow_hints(session_label: &str) -> (String, Vec<std::ops::Range<usize>>) {
+    let session_hint = format!("{session_label}");
     let parts = [
         ("<a>", " add"),
         ("<d>", " del"),
+        ("<s>", session_hint.as_str()),
         ("<Enter>", " go"),
         ("<Esc>", ""),
     ];

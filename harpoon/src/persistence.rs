@@ -9,12 +9,14 @@ use crate::Pane;
 struct PaneBookmark {
     tab_name: String,
     pane_title: String,
+    #[serde(default)]
+    last_accessed: u64,
 }
 
 #[derive(Default)]
 pub struct Persistence {
     pending_bookmarks: Vec<PaneBookmark>,
-    last_saved_state: Vec<(String, String)>,
+    last_saved_state: Vec<(String, String, u64)>,
 }
 
 #[derive(Debug)]
@@ -48,7 +50,8 @@ impl Persistence {
 
         self.pending_bookmarks.retain(|bookmark| {
             match find_pane_for_bookmark(bookmark, pane_manifest, tab_infos, &current_pane_ids) {
-                Some(pane) => {
+                Some(mut pane) => {
+                    pane.last_accessed = bookmark.last_accessed;
                     current_pane_ids.push(pane.pane_info.id);
                     new_panes.push(pane);
                     false
@@ -61,9 +64,9 @@ impl Persistence {
     }
 
     pub fn has_changed(&self, panes: &[Pane]) -> bool {
-        let current: Vec<(String, String)> = panes
+        let current: Vec<(String, String, u64)> = panes
             .iter()
-            .map(|p| (p.tab_info.name.clone(), p.pane_info.title.clone()))
+            .map(|p| (p.tab_info.name.clone(), p.pane_info.title.clone(), p.last_accessed))
             .collect();
         current != self.last_saved_state
     }
@@ -90,12 +93,11 @@ impl Persistence {
     pub fn on_load_command(&mut self, content: &str) -> Result<(), PersistenceError> {
         match serde_json::from_str::<Vec<PaneBookmark>>(content) {
             Ok(bookmarks) => {
-                self.pending_bookmarks = bookmarks;
-                self.last_saved_state = self
-                    .pending_bookmarks
+                self.last_saved_state = bookmarks
                     .iter()
-                    .map(|b| (b.tab_name.clone(), b.pane_title.clone()))
+                    .map(|b| (b.tab_name.clone(), b.pane_title.clone(), b.last_accessed))
                     .collect();
+                self.pending_bookmarks = bookmarks;
                 Ok(())
             }
             Err(e) => Err(PersistenceError::LoadFromDiskFailed(e)),
@@ -111,6 +113,7 @@ impl Persistence {
             .map(|p| PaneBookmark {
                 tab_name: p.tab_info.name.clone(),
                 pane_title: p.pane_info.title.clone(),
+                last_accessed: p.last_accessed,
             })
             .collect();
 
@@ -126,7 +129,7 @@ impl Persistence {
 
         self.last_saved_state = bookmarks
             .iter()
-            .map(|b| (b.tab_name.clone(), b.pane_title.clone()))
+            .map(|b| (b.tab_name.clone(), b.pane_title.clone(), b.last_accessed))
             .collect();
     }
 }
@@ -153,6 +156,7 @@ fn find_pane_for_bookmark(
             .map(|pane| Pane {
                 pane_info: pane.clone(),
                 tab_info: tab.clone(),
+                last_accessed: 0,
             });
 
         if matched_pane.is_some() {

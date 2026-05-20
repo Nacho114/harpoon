@@ -858,6 +858,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "harpoon-worker"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "zellij-tile",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

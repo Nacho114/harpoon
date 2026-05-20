@@ -1,0 +1,9 @@
+[package]
+name = "harpoon-worker"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+serde = "1.0.175"
+serde_json = "1.0.103"
+zellij-tile = "0.42.2"

@@ -311,7 +311,7 @@ impl ZellijPlugin for State {
                     if let Some(pane) = self.panes.get(self.selected) {
                         hide_self();
                         // TODO: This has a bug on macOS with hidden panes
-                        focus_terminal_pane(pane.pane_info.id, true);
+                        focus_terminal_pane(pane.pane_info.id, true, true);
                     }
                 }
                 _ => (),
